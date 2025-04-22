@@ -1,0 +1,703 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Cálculo de Embalagens</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'primary-bg': '#ecf1f1ff', // Fundo principal
+                        'button-bg': '#a14995ff',  // Botões
+                        'text-primary': '#000000ff', // Texto
+                        'report-bg': '#F3F4F6'    // Fundo do relatório, formulários e tabelas
+                    }
+                }
+            }
+        }
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-router-dom/6.14.2/react-router-dom.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.22.9/babel.min.js"></script>
+</head>
+<body class="bg-primary-bg text-text-primary">
+    <div id="root"></div>
+    <script type="text/babel">
+        // Verifica se ReactRouterDOM está definido
+        if (typeof ReactRouterDOM === 'undefined') {
+            console.error('ReactRouterDOM não está definido. Verifique se o script do react-router-dom foi carregado corretamente.');
+            throw new Error('ReactRouterDOM não está definido');
+        }
+
+        const { BrowserRouter, Routes, Route, Link } = ReactRouterDOM;
+
+        // Função auxiliar para gerar e baixar CSV
+        function downloadCSV(content, fileName) {
+            const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = fileName;
+            link.click();
+            URL.revokeObjectURL(link.href);
+        }
+
+        const gramaturas = [
+            400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500
+        ];
+
+        // Página de Cálculo de Embalagens
+        function CalculoEmbalagens() {
+            const [embalagem, setEmbalagem] = React.useState('Caixa');
+            const [compExt, setCompExt] = React.useState(0);
+            const [largExt, setLargExt] = React.useState(0);
+            const [altExt, setAltExt] = React.useState(0);
+            const [gramatura, setGramatura] = React.useState(400);
+            const [sentidoOnda, setSentidoOnda] = React.useState('comprimento');
+            const [interno, setInterno] = React.useState('sem colmeia');
+            const [cavidadesComp, setCavidadesComp] = React.useState(0);
+            const [cavidadesLarg, setCavidadesLarg] = React.useState(0);
+            const [relatorio, setRelatorio] = React.useState(null);
+
+            const calcularCaixaAberta = () => {
+                let compAberto, largAberto;
+                if (largExt / 2 > altExt) {
+                    compAberto = compExt + largExt;
+                } else {
+                    compAberto = compExt + (2 * altExt);
+                }
+                largAberto = largExt + (2 * altExt);
+                return { compAberto, largAberto };
+            };
+
+            const calcularColmeia = () => {
+                if (interno !== 'com colmeia') return null;
+                const divisComp = cavidadesComp - 1;
+                const divisLarg = cavidadesLarg - 1;
+                const altDivis = altExt - 25;
+                return { divisComp, divisLarg, altDivis };
+            };
+
+            const calcularFundo = () => {
+                if (interno !== 'com fundo') return null;
+                const compFundo = (compExt - 16) + (2 * (altExt - 25));
+                const largFundo = (largExt - 8) + (2 * (altExt - 25));
+                return { compFundo, largFundo };
+            };
+
+            const calcularCinta = () => {
+                if (interno !== 'com cinta') return null;
+                const compCinta = (compExt - 16) + (largExt - 8) + 30;
+                return { compCinta, qtdCinta: 2 };
+            };
+
+            const calcularRendimentoChapa = (comp, larg) => {
+                const chapas = [
+                    { boca: 1820, comprimento: comp },
+                    { boca: 1120, comprimento: comp }
+                ];
+                let melhorChapa = null;
+                let menorArea = Infinity;
+
+                chapas.forEach(chapa => {
+                    if (sentidoOnda === 'comprimento' && chapa.boca >= larg && chapa.comprimento >= comp) {
+                        const area = chapa.boca * chapa.comprimento;
+                        if (area < menorArea) {
+                            menorArea = area;
+                            melhorChapa = chapa;
+                        }
+                    } else if (sentidoOnda === 'largura' && chapa.boca >= comp && chapa.comprimento >= larg) {
+                        const area = chapa.boca * chapa.comprimento;
+                        if (area < menorArea) {
+                            menorArea = area;
+                            melhorChapa = chapa;
+                        }
+                    }
+                });
+
+                return melhorChapa;
+            };
+
+            const calcularPeso = (comp, larg, gram) => {
+                return (comp / 1000) * (larg / 1000) * (gram / 1000);
+            };
+
+            const handleCalcular = () => {
+                const compInt = compExt - 16;
+                const largInt = largExt - 8;
+                const { compAberto, largAberto } = calcularCaixaAberta();
+                const colmeia = calcularColmeia();
+                const fundo = calcularFundo();
+                const cinta = calcularCinta();
+                const chapaCaixa = calcularRendimentoChapa(compAberto, largAberto);
+
+                let pesoTotal = calcularPeso(compAberto, largAberto, gramatura);
+                const relatorio = {
+                    dimensional: {
+                        caixaExterna: { compExt, largExt, altExt },
+                        caixaInterna: { compInt, largInt, altExt },
+                        caixaAberta: { compAberto, largAberto }
+                    },
+                    pesos: {
+                        caixa: pesoTotal
+                    },
+                    chapa: chapaCaixa
+                };
+
+                if (colmeia) {
+                    const pesoColmeia = calcularPeso(compInt, colmeia.altDivis, gramatura) * colmeia.divisComp +
+                                     calcularPeso(largInt, colmeia.altDivis, gramatura) * colmeia.divisLarg;
+                    relatorio.dimensional.colmeia = colmeia;
+                    relatorio.pesos.colmeia = pesoColmeia;
+                    pesoTotal += pesoColmeia;
+                }
+
+                if (fundo) {
+                    const pesoFundo = calcularPeso(fundo.compFundo, fundo.largFundo, gramatura);
+                    relatorio.dimensional.fundo = fundo;
+                    relatorio.pesos.fundo = pesoFundo;
+                    pesoTotal += pesoFundo;
+                }
+
+                if (cinta) {
+                    const pesoCinta = calcularPeso(cinta.compCinta, 50, gramatura) * cinta.qtdCinta;
+                    relatorio.dimensional.cinta = cinta;
+                    relatorio.pesos.cinta = pesoCinta;
+                    pesoTotal += pesoCinta;
+                }
+
+                relatorio.pesoTotal = pesoTotal;
+                setRelatorio(relatorio);
+            };
+
+            const handleExportRelatorio = () => {
+                if (!relatorio) return;
+
+                let csvContent = 'Categoria,Descrição,Valor\n';
+                
+                // Dimensional
+                csvContent += `Dimensional,Caixa Externa,${relatorio.dimensional.caixaExterna.compExt} x ${relatorio.dimensional.caixaExterna.largExt} x ${relatorio.dimensional.caixaExterna.altExt} mm\n`;
+                csvContent += `Dimensional,Caixa Interna,${relatorio.dimensional.caixaInterna.compInt} x ${relatorio.dimensional.caixaInterna.largInt} x ${relatorio.dimensional.caixaInterna.altExt} mm\n`;
+                csvContent += `Dimensional,Caixa Aberta,${relatorio.dimensional.caixaAberta.compAberto} x ${relatorio.dimensional.caixaAberta.largAberto} mm\n`;
+
+                if (relatorio.dimensional.colmeia) {
+                    csvContent += `Dimensional,Colmeia,${relatorio.dimensional.colmeia.divisComp} divisórias (comprimento), ${relatorio.dimensional.colmeia.divisLarg} divisórias (largura), Altura: ${relatorio.dimensional.colmeia.altDivis} mm\n`;
+                }
+                if (relatorio.dimensional.fundo) {
+                    csvContent += `Dimensional,Fundo,${relatorio.dimensional.fundo.compFundo} x ${relatorio.dimensional.fundo.largFundo} mm\n`;
+                }
+                if (relatorio.dimensional.cinta) {
+                    csvContent += `Dimensional,Cinta,${relatorio.dimensional.cinta.compCinta} mm x ${relatorio.dimensional.cinta.qtdCinta} peças\n`;
+                }
+
+                // Melhor Chapa
+                csvContent += `Melhor Chapa,${relatorio.chapa ? `Boca: ${relatorio.chapa.boca} mm, Comprimento: ${relatorio.chapa.comprimento} mm` : 'Nenhuma chapa adequada encontrada'}\n`;
+
+                // Pesos
+                csvContent += `Pesos,Caixa,${relatorio.pesos.caixa.toFixed(3)} kg\n`;
+                if (relatorio.pesos.colmeia) {
+                    csvContent += `Pesos,Colmeia,${relatorio.pesos.colmeia.toFixed(3)} kg\n`;
+                }
+                if (relatorio.pesos.fundo) {
+                    csvContent += `Pesos,Fundo,${relatorio.pesos.fundo.toFixed(3)} kg\n`;
+                }
+                if (relatorio.pesos.cinta) {
+                    csvContent += `Pesos,Cinta,${relatorio.pesos.cinta.toFixed(3)} kg\n`;
+                }
+                csvContent += `Pesos,Peso Total,${relatorio.pesoTotal.toFixed(3)} kg\n`;
+
+                downloadCSV(csvContent, 'relatorio_embalagens.csv');
+            };
+
+            return (
+                <div className="container mx-auto p-4">
+                    <h1 className="text-2xl font-bold mb-4">Cálculo de Embalagens</h1>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label className="block mb-2">Tipo de Embalagem:</label>
+                            <select
+                                className="w-full p-2 border rounded bg-report-bg text-text-primary"
+                                value={embalagem}
+                                onChange={(e) => setEmbalagem(e.target.value)}
+                            >
+                                <option value="Caixa">Caixa</option>
+                                <option value="Fundo com colmeia">Fundo com colmeia</option>
+                                <option value="Colmeia">Colmeia</option>
+                                <option value="Tabuleiro">Tabuleiro</option>
+                            </select>
+
+                            <label className="block mb-2 mt-4">Comprimento Externo (mm):</label>
+                            <input
+                                type="number"
+                                className="w-full p-2 border rounded bg-report-bg text-text-primary"
+                                value={compExt}
+                                onChange={(e) => setCompExt(Number(e.target.value))}
+                            />
+
+                            <label className="block mb-2 mt-4">Largura Externa (mm):</label>
+                            <input
+                                type="number"
+                                className="w-full p-2 border rounded bg-report-bg text-text-primary"
+                                value={largExt}
+                                onChange={(e) => setLargExt(Number(e.target.value))}
+                            />
+
+                            <label className="block mb-2 mt-4">Altura Externa (mm):</label>
+                            <input
+                                type="number"
+                                className="w-full p-2 border rounded bg-report-bg text-text-primary"
+                                value={altExt}
+                                onChange={(e) => setAltExt(Number(e.target.value))}
+                            />
+
+                            <label className="block mb-2 mt-4">Gramatura (g/m²):</label>
+                            <select
+                                className="w-full p-2 border rounded bg-report-bg text-text-primary"
+                                value={gramatura}
+                                onChange={(e) => setGramatura(Number(e.target.value))}
+                            >
+                                {gramaturas.map(g => (
+                                    <option key={g} value={g}>{g}g</option>
+                                ))}
+                            </select>
+
+                            <label className="block mb-2 mt-4">Sentido de Onda:</label>
+                            <select
+                                className="w-full p-2 border rounded bg-report-bg text-text-primary"
+                                value={sentidoOnda}
+                                onChange={(e) => setSentidoOnda(e.target.value)}
+                            >
+                                <option value="comprimento">Comprimento</option>
+                                <option value="largura">Largura</option>
+                            </select>
+
+                            <label className="block mb-2 mt-4">Interno da Caixa:</label>
+                            <select
+                                className="w-full p-2 border rounded bg-report-bg text-text-primary"
+                                value={interno}
+                                onChange={(e) => setInterno(e.target.value)}
+                            >
+                                <option value="sem colmeia">Sem Colmeia</option>
+                                <option value="com colmeia">Com Colmeia</option>
+                                <option value="com fundo">Com Fundo</option>
+                                <option value="com cinta">Com Cinta</option>
+                            </select>
+
+                            {interno === 'com colmeia' && (
+                                <>
+                                    <label className="block mb-2 mt-4">Cavidades no Comprimento:</label>
+                                    <input
+                                        type="number"
+                                        className="w-full p-2 border rounded bg-report-bg text-text-primary"
+                                        value={cavidadesComp}
+                                        onChange={(e) => setCavidadesComp(Number(e.target.value))}
+                                    />
+
+                                    <label className="block mb-2 mt-4">Cavidades na Largura:</label>
+                                    <input
+                                        type="number"
+                                        className="w-full p-2 border rounded bg-report-bg text-text-primary"
+                                        value={cavidadesLarg}
+                                        onChange={(e) => setCavidadesLarg(Number(e.target.value))}
+                                    />
+                                </>
+                            )}
+
+                            <button
+                                className="mt-4 bg-button-bg text-text-primary p-2 rounded hover:bg-opacity-80"
+                                onClick={handleCalcular}
+                            >
+                                Calcular
+                            </button>
+                        </div>
+
+                        {relatorio && (
+                            <div className="bg-report-bg p-4 rounded shadow text-text-primary">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h2 className="text-xl font-bold">Relatório</h2>
+                                    <button
+                                        className="bg-button-bg text-text-primary p-2 rounded hover:bg-opacity-80"
+                                        onClick={handleExportRelatorio}
+                                    >
+                                        Exportar Relatório
+                                    </button>
+                                </div>
+                                <h3 className="font-semibold">Dimensional:</h3>
+                                <p>Caixa Externa: {relatorio.dimensional.caixaExterna.compExt} x {relatorio.dimensional.caixaExterna.largExt} x {relatorio.dimensional.caixaExterna.altExt} mm</p>
+                                <p>Caixa Interna: {relatorio.dimensional.caixaInterna.compInt} x {relatorio.dimensional.caixaInterna.largInt} x {relatorio.dimensional.caixaInterna.altExt} mm</p>
+                                <p>Caixa Aberta: {relatorio.dimensional.caixaAberta.compAberto} x {relatorio.dimensional.caixaAberta.largAberto} mm</p>
+
+                                {relatorio.dimensional.colmeia && (
+                                    <>
+                                        <p>Colmeia: {relatorio.dimensional.colmeia.divisComp} divisórias (comprimento), {relatorio.dimensional.colmeia.divisLarg} divisórias (largura), Altura: {relatorio.dimensional.colmeia.altDivis} mm</p>
+                                    </>
+                                )}
+
+                                {relatorio.dimensional.fundo && (
+                                    <p>Fundo: {relatorio.dimensional.fundo.compFundo} x {relatorio.dimensional.fundo.largFundo} mm</p>
+                                )}
+
+                                {relatorio.dimensional.cinta && (
+                                    <p>Cinta: {relatorio.dimensional.cinta.compCinta} mm x {relatorio.dimensional.cinta.qtdCinta} peças</p>
+                                )}
+
+                                <h3 className="font-semibold mt-4">Melhor Chapa:</h3>
+                                <p>{relatorio.chapa ? `Boca: ${relatorio.chapa.boca} mm, Comprimento: ${relatorio.chapa.comprimento} mm` : 'Nenhuma chapa adequada encontrada'}</p>
+
+                                <h3 className="font-semibold mt-4">Pesos:</h3>
+                                <p>Caixa: {relatorio.pesos.caixa.toFixed(3)} kg</p>
+                                {relatorio.pesos.colmeia && <p>Colmeia: {relatorio.pesos.colmeia.toFixed(3)} kg</p>}
+                                {relatorio.pesos.fundo && <p>Fundo: {relatorio.pesos.fundo.toFixed(3)} kg</p>}
+                                {relatorio.pesos.cinta && <p>Cinta: {relatorio.pesos.cinta.toFixed(3)} kg</p>}
+                                <p>Peso Total: {relatorio.pesoTotal.toFixed(3)} kg</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        // Página de Cadastro de Matérias-Primas
+        function CadastroMateriasPrimas() {
+            const [materias, setMaterias] = React.useState(() => {
+                const saved = localStorage.getItem('materiasPrimas');
+                return saved ? JSON.parse(saved) : [];
+            });
+            const [codigo, setCodigo] = React.useState('');
+            const [descricao, setDescricao] = React.useState('');
+            const [valor, setValor] = React.useState('');
+            const [editId, setEditId] = React.useState(null);
+            const [modo, setModo] = React.useState('inserir'); // 'inserir' ou 'importar'
+            const [csvFile, setCsvFile] = React.useState(null);
+
+            React.useEffect(() => {
+                localStorage.setItem('materiasPrimas', JSON.stringify(materias));
+            }, [materias]);
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (!codigo || !descricao || !valor) {
+                    alert('Preencha todos os campos!');
+                    return;
+                }
+
+                if (editId !== null) {
+                    setMaterias(materias.map(item =>
+                        item.id === editId ? { id: editId, codigo, descricao, valor: Number(valor) } : item
+                    ));
+                    setEditId(null);
+                } else {
+                    const novaMateria = {
+                        id: Date.now(),
+                        codigo,
+                        descricao,
+                        valor: Number(valor)
+                    };
+                    setMaterias([...materias, novaMateria]);
+                }
+
+                setCodigo('');
+                setDescricao('');
+                setValor('');
+            };
+
+            const handleEdit = (materia) => {
+                setCodigo(materia.codigo);
+                setDescricao(materia.descricao);
+                setValor(materia.valor);
+                setEditId(materia.id);
+                setModo('inserir');
+            };
+
+            const handleDelete = (id) => {
+                if (window.confirm('Deseja excluir esta matéria-prima?')) {
+                    setMaterias(materias.filter(item => item.id !== id));
+                }
+            };
+
+            const handleExportMaterias = () => {
+                if (materias.length === 0) {
+                    alert('Nenhuma matéria-prima para exportar!');
+                    return;
+                }
+
+                let csvContent = 'Código,Descrição,Valor (R$)\n';
+                materias.forEach(materia => {
+                    csvContent += `${materia.codigo},${materia.descricao},${materia.valor.toFixed(2)}\n`;
+                });
+
+                downloadCSV(csvContent, 'materias_primas.csv');
+            };
+
+            const handleImportCSV = (e) => {
+                e.preventDefault();
+                if (!csvFile) {
+                    alert('Selecione um arquivo CSV!');
+                    return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const text = event.target.result;
+                    const lines = text.split('\n').map(line => line.trim()).filter(line => line);
+                    if (lines.length < 1) {
+                        alert('Arquivo CSV vazio ou inválido!');
+                        return;
+                    }
+
+                    const headers = lines[0].split(',').map(h => h.trim());
+                    if (headers[0] !== 'Código' || headers[1] !== 'Descrição' || headers[2] !== 'Valor (R$)') {
+                        alert('Formato CSV inválido! Esperado: Código,Descrição,Valor (R$)');
+                        return;
+                    }
+
+                    const novasMaterias = [];
+                    for (let i = 1; i < lines.length; i++) {
+                        const [codigo, descricao, valor] = lines[i].split(',').map(v => v.trim());
+                        if (codigo && descricao && valor && !isNaN(valor)) {
+                            if (materias.some(m => m.codigo === codigo)) {
+                                alert(`Código ${codigo} já existe! Ignorando...`);
+                                continue;
+                            }
+                            novasMaterias.push({
+                                id: Date.now() + i,
+                                codigo,
+                                descricao,
+                                valor: Number(valor)
+                            });
+                        }
+                    }
+
+                    if (novasMaterias.length === 0) {
+                        alert('Nenhuma matéria-prima válida encontrada no CSV!');
+                        return;
+                    }
+
+                    setMaterias([...materias, ...novasMaterias]);
+                    setCsvFile(null);
+                    e.target.reset();
+                    alert(`${novasMaterias.length} matéria(s)-prima(s) importada(s) com sucesso!`);
+                };
+                reader.readAsText(csvFile);
+            };
+
+            return (
+                <div className="container mx-auto p-4">
+                    <h1 className="text-2xl font-bold mb-4">Cadastro de Matérias-Primas</h1>
+                    <div className="mb-6">
+                        <div className="flex space-x-4 mb-4">
+                            <button
+                                className={`p-2 rounded ${modo === 'inserir' ? 'bg-button-bg text-text-primary' : 'bg-gray-300 text-text-primary'} hover:bg-opacity-80`}
+                                onClick={() => setModo('inserir')}
+                            >
+                                Inserir Item
+                            </button>
+                            <button
+                                className={`p-2 rounded ${modo === 'importar' ? 'bg-button-bg text-text-primary' : 'bg-gray-300 text-text-primary'} hover:bg-opacity-80`}
+                                onClick={() => setModo('importar')}
+                            >
+                                Importar CSV
+                            </button>
+                        </div>
+
+                        {modo === 'inserir' ? (
+                            <form onSubmit={handleSubmit} className="bg-report-bg p-4 rounded shadow">
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div>
+                                        <label className="block mb-2">Código:</label>
+                                        <input
+                                            type="text"
+                                            className="w-full p-2 border rounded bg-white text-text-primary"
+                                            value={codigo}
+                                            onChange={(e) => setCodigo(e.target.value)}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block mb-2">Descrição:</label>
+                                        <input
+                                            type="text"
+                                            className="w-full p-2 border rounded bg-white text-text-primary"
+                                            value={descricao}
+                                            onChange={(e) => setDescricao(e.target.value)}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block mb-2">Valor (R$):</label>
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            className="w-full p-2 border rounded bg-white text-text-primary"
+                                            value={valor}
+                                            onChange={(e) => setValor(e.target.value)}
+                                        />
+                                    </div>
+                                </div>
+                                <button
+                                    type="submit"
+                                    className="mt-4 bg-button-bg text-text-primary p-2 rounded hover:bg-opacity-80"
+                                >
+                                    {editId !== null ? 'Salvar Alterações' : 'Cadastrar'}
+                                </button>
+                                {editId !== null && (
+                                    <button
+                                        type="button"
+                                        className="mt-4 ml-2 bg-gray-500 text-white p-2 rounded hover:bg-gray-600"
+                                        onClick={() => {
+                                            setCodigo('');
+                                            setDescricao('');
+                                            setValor('');
+                                            setEditId(null);
+                                        }}
+                                    >
+                                        Cancelar
+                                    </button>
+                                )}
+                            </form>
+                        ) : (
+                            <form onSubmit={handleImportCSV} className="bg-report-bg p-4 rounded shadow">
+                                <div>
+                                    <label className="block mb-2">Selecionar Arquivo CSV:</label>
+                                    <input
+                                        type="file"
+                                        accept=".csv"
+                                        className="w-full p-2 border rounded bg-white text-text-primary"
+                                        onChange={(e) => setCsvFile(e.target.files[0])}
+                                    />
+                                </div>
+                                <button
+                                    type="submit"
+                                    className="mt-4 bg-button-bg text-text-primary p-2 rounded hover:bg-opacity-80"
+                                >
+                                    Importar
+                                </button>
+                            </form>
+                        )}
+                    </div>
+
+                    <div className="flex justify-between items-center mb-4">
+                        <h2 className="text-xl font-bold">Matérias-Primas Cadastradas</h2>
+                        <button
+                            className="bg-button-bg text-text-primary p-2 rounded hover:bg-opacity-80"
+                            onClick={handleExportMaterias}
+                        >
+                            Exportar Matérias-Primas
+                        </button>
+                    </div>
+                    {materias.length === 0 ? (
+                        <p>Nenhuma matéria-prima cadastrada.</p>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full bg-report-bg rounded shadow">
+                                <thead>
+                                    <tr className="bg-button-bg text-text-primary">
+                                        <th className="p-2">Código</th>
+                                        <th className="p-2">Descrição</th>
+                                        <th className="p-2">Valor (R$)</th>
+                                        <th className="p-2">Ações</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {materias.map(materia => (
+                                        <tr key={materia.id} className="border-t">
+                                            <td className="p-2">{materia.codigo}</td>
+                                            <td className="p-2">{materia.descricao}</td>
+                                            <td className="p-2">{materia.valor.toFixed(2)}</td>
+                                            <td className="p-2">
+                                                <button
+                                                    className="bg-blue-500 text-white p-1 rounded mr-2 hover:bg-blue-600"
+                                                    onClick={() => handleEdit(materia)}
+                                                >
+                                                    Editar
+                                                </button>
+                                                <button
+                                                    className="bg-red-500 text-white p-1 rounded hover:bg-red-600"
+                                                    onClick={() => handleDelete(materia.id)}
+                                                >
+                                                    Excluir
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Componente Principal com Navegação
+        function App() {
+            return (
+                <BrowserRouter>
+                    <nav className="bg-report-bg p-4 shadow">
+                        <div className="container mx-auto flex space-x-4">
+                            <Link
+                                to="/"
+                                className="bg-button-bg text-text-primary p-2 rounded hover:bg-opacity-80"
+                            >
+                                Cálculo de Embalagens
+                            </Link>
+                            <Link
+                                to="/cadastro"
+                                className="bg-button-bg text-text-primary p-2 rounded hover:bg-opacity-80"
+                            >
+                                Cadastro de Matérias-Primas
+                            </Link>
+                        </div>
+                    </nav>
+                    <Routes>
+                        <Route path="/" element={<CalculoEmbalagens />} />
+                        <Route path="/cadastro" element={<CadastroMateriasPrimas />} />
+                    </Routes>
+                </BrowserRouter>
+            );
+        }
+
+        // Renderiza o aplicativo
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
